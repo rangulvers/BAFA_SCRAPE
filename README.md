@@ -23,7 +23,7 @@ A robust Python web scraper designed to collect advisor data from the BAFA (Bund
 
 1. Clone the repository:
 ```bash
-git clone [repository-url]
+git clone https://github.com/rangulvers/bafa_scrape
 cd bafa-scraper
 ```
 
