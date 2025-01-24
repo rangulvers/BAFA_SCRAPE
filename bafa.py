@@ -1,10 +1,11 @@
+import math
 import scrapy
 from scrapy.crawler import CrawlerProcess
 from scrapy.spiders import Spider
 from scrapy import signals
 from scrapy.exceptions import DropItem
 import pandas as pd
-from urllib.parse import urljoin
+from urllib.parse import urlencode, urljoin
 import re
 from tqdm import tqdm
 from datetime import datetime
@@ -33,25 +34,24 @@ class SpiderConfig(BaseModel):
     """Configuration settings for the BAFA spider."""
     test_mode: bool = Field(default=False, description="Run in test mode with limited entries")
     debug_mode: bool = Field(default=False, description="Enable detailed logging")
-    items_per_page: int = Field(default=9999, ge=1, description="Number of items per page")
+    items_per_page: int = Field(default=200, ge=1, description="Number of items per page")  # Changed from 9999 to 200
     page: int = Field(default=0, ge=0, description="Starting page number")
     max_retries: int = Field(default=3, ge=0, description="Maximum number of retry attempts")
-    delay_between_requests: float = Field(default=0.25, ge=0, description="Delay between requests in seconds")
+    delay_between_requests: float = Field(default=1.0, ge=0, description="Delay between requests in seconds")
     output_dir: Path = Field(default=Path("output"), description="Directory for output files")
     log_dir: Path = Field(default=Path("logs"), description="Directory for log files")
 
     class Config:
         arbitrary_types_allowed = True
 
-    def get_url(self) -> str:
+    def get_url(self, page: int = None, results_per_page: int = None) -> str:
         """Generate the URL based on configuration."""
-        from urllib.parse import urlencode
         base_url = 'https://elan1.bafa.bund.de/bafa-portal/audit-suche/showErgebnis'
         params = {
-            'resultsPerPage': 5 if self.test_mode else self.items_per_page,
-            'page': self.page
+            'resultsPerPage': results_per_page or (5 if self.test_mode else self.items_per_page),
+            'page': page if page is not None else self.page
         }
-        logger.info(f"Checking BAFA URL : {base_url}?{urlencode(params)}")
+        logger.debug(f"Generated URL: {base_url}?{urlencode(params)}")
         return f"{base_url}?{urlencode(params)}"
 
     def setup_directories(self) -> None:
@@ -162,14 +162,12 @@ class ProgressStatsCollector:
                 logger.error(f"Failed to finish progress tracking: {str(e)}")
 
 class BAFASpider(Spider):
-    """Spider for crawling BAFA advisor data."""
-    
     name = 'bafa_spider'
     
     custom_settings = {
         'USER_AGENT': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'CONCURRENT_REQUESTS': 32,
-        'CONCURRENT_REQUESTS_PER_DOMAIN': 32,
+        'CONCURRENT_REQUESTS': 4,  # Reduced from 32 for better stability
+        'CONCURRENT_REQUESTS_PER_DOMAIN': 4,
         'COOKIES_ENABLED': False,
         'RETRY_ENABLED': True,
         'RETRY_TIMES': 3,
@@ -186,15 +184,15 @@ class BAFASpider(Spider):
         self.config.setup_directories()
         self.stats_collector = ProgressStatsCollector(debug_mode)
         self.items: List[AdvisorData] = []
-        self.start_urls = [self.config.get_url()]
         
-        # Update custom settings based on config
+        # Initialize with first page only
+        self.start_urls = [self.config.get_url(page=0, results_per_page=1)]
+        
+        self.total_entries = 0
+        self.total_pages = 0
+        
         self.custom_settings['DOWNLOAD_DELAY'] = self.config.delay_between_requests
         self.custom_settings['RETRY_TIMES'] = self.config.max_retries
-
-        logger.info(f"Spider initialized in {'TEST' if test_mode else 'FULL'} mode")
-        if debug_mode:
-            logger.info("Debug logging enabled")
 
     @staticmethod
     def clean_text(text: Optional[str]) -> str:
@@ -234,18 +232,49 @@ class BAFASpider(Spider):
             raise DataExtractionError("Failed to extract row data") from e
 
     def parse(self, response: scrapy.http.Response) -> Any:
-        """Parse the main page with advisor listings."""
+        """Parse the initial page to get total entries and generate pagination requests."""
         try:
+            # Extract total number of entries
+            total_text = response.xpath('//span[contains(text(), "Treffer")]/text()').get()
+            if total_text:
+                match = re.search(r'ergab (\d+) Treffer', total_text)
+                if match:
+                    self.total_entries = int(match.group(1))
+                    if self.config.test_mode:
+                        self.total_entries = min(5, self.total_entries)
+                    
+                    # Calculate total pages
+                    entries_per_page = self.config.items_per_page
+                    self.total_pages = math.ceil(self.total_entries / entries_per_page)
+                    
+                    logger.info(f"Found {self.total_entries} total entries across {self.total_pages} pages")
+                    self.stats_collector.set_total(self.total_entries)
+
+                    # Generate requests for all pages
+                    for page in range(self.total_pages):
+                        if self.config.test_mode and page > 0:
+                            break
+                        
+                        url = self.config.get_url(page=page)
+                        yield scrapy.Request(
+                            url,
+                            callback=self.parse_page,
+                            meta={'page': page},
+                            dont_filter=True,
+                            priority=self.total_pages - page  # Higher priority for earlier pages
+                        )
+
+        except Exception as e:
+            logger.error(f"Error parsing initial page: {str(e)}")
+            raise SpiderException("Initial page parsing failed") from e
+
+    def parse_page(self, response: scrapy.http.Response) -> Any:
+        """Parse individual result pages."""
+        try:
+            page = response.meta.get('page', 0)
             rows = response.xpath('//table[@class="ergebnisListe"]/tbody/tr[position()>1]')
-            total_rows = len(rows)
             
-            if self.config.test_mode:
-                rows = rows[:5]
-                total_rows = 5
-                logger.debug("TEST MODE: Limited to 5 entries")
-            
-            logger.debug(f"Found {total_rows} rows to process")
-            self.stats_collector.set_total(total_rows)
+            logger.debug(f"Processing page {page + 1}/{self.total_pages} with {len(rows)} entries")
 
             for row in rows:
                 try:
@@ -263,12 +292,13 @@ class BAFASpider(Spider):
                                 dont_filter=True
                             )
                 except Exception as e:
-                    logger.error(f"Error processing row: {str(e)}")
+                    logger.error(f"Error processing row on page {page}: {str(e)}")
                     self.stats_collector.increment(success=False)
 
         except Exception as e:
-            logger.error(f"Error parsing main page: {str(e)}")
-            raise SpiderException("Main page parsing failed") from e
+            logger.error(f"Error parsing page {page}: {str(e)}")
+            raise SpiderException(f"Page {page} parsing failed") from e
+
 
     def parse_details(self, response: scrapy.http.Response) -> Optional[Dict[str, str]]:
         """Parse detailed advisor information."""
@@ -427,22 +457,21 @@ def run_spider(test_mode: bool = False, debug_mode: bool = False) -> None:
     try:
         logger.info(f"Starting BAFA advisor data collection...")
         
-        # Create CrawlerProcess with settings
         process = CrawlerProcess({
             'TELNETCONSOLE_ENABLED': False,
-            'LOG_LEVEL': 'DEBUG' if debug_mode else 'ERROR',
+            'LOG_LEVEL': 'DEBUG' if debug_mode else 'INFO',
             'COOKIES_ENABLED': False,
             'DOWNLOAD_TIMEOUT': 15,
             'RETRY_ENABLED': True,
             'RETRY_TIMES': 3,
         })
         
-        # Run the spider
         process.crawl(BAFASpider, test_mode=test_mode, debug_mode=debug_mode)
         process.start()
     except Exception as e:
         logger.error(f"Failed to run spider: {str(e)}")
         sys.exit(1)
+
 
 if __name__ == "__main__":
     import argparse
