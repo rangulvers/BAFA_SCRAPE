@@ -168,7 +168,7 @@ class BAFASpider(Spider):
     
     custom_settings = {
         'USER_AGENT': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'CONCURRENT_REQUESTS': 1,
+        'CONCURRENT_REQUESTS': 32,
         'CONCURRENT_REQUESTS_PER_DOMAIN': 32,
         'COOKIES_ENABLED': False,
         'RETRY_ENABLED': True,
