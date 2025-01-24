@@ -1,33 +1,28 @@
-# BAFA Advisor Scraper
+# BAFA Advisor Data Scraper
 
-A Python web scraper that collects information about energy advisors from the BAFA (Bundesamt für Wirtschaft und Ausfuhrkontrolle) portal.
-
-## Description
-
-This scraper collects detailed information about energy advisors listed on the BAFA portal, including their contact details, locations, and professional information. It processes both the main listing and individual detail pages for each advisor.
+A Python-based web scraper using Scrapy to collect advisor data from the BAFA (Bundesamt für Wirtschaft und Ausfuhrkontrolle) website.
 
 ## Features
 
-- Scrapes advisor information from the BAFA portal
-- Handles pagination and detail pages automatically
-- Collects comprehensive information including:
-  - Advisor name
-  - Company name
-  - Address (Street, Postal Code, City)
-  - Contact information (Phone, Fax)
+- Scrapes advisor information including:
+  - Name
+  - Company
+  - Address details
+  - Contact information
+  - Email presence
   - Website
   - BFEE ID
-  - Detail page URLs
-- Detects presence of email addresses (shown as images on the website)
-- Provides progress bar during scraping
-- Generates statistics about the collected data
-- Exports data to Excel format
+- Progress bar tracking
+- Configurable test mode for development
+- Debug logging capabilities
+- Excel output with timestamp
+- Error handling and retry mechanisms
 
 ## Requirements
 
 ```bash
 python >= 3.11
-scrapy
+scrapy >= 2.12.0
 pandas
 tqdm
 openpyxl

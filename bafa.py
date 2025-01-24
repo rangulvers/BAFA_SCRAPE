@@ -1,46 +1,135 @@
 import scrapy
 from scrapy.crawler import CrawlerProcess
+from scrapy.spiders import Spider
+from scrapy import signals
 import pandas as pd
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse, parse_qs, urlencode
 import re
 from tqdm import tqdm
 from datetime import datetime
-from scrapy.spiders import CrawlSpider
-from scrapy import signals
-from scrapy.utils.project import get_project_settings
+import logging
+from typing import Optional, Dict, List, Any
+from pathlib import Path
+from dataclasses import dataclass
 
-# Move ProgressStatsCollector class definition before BAFASpider
+@dataclass
+class SpiderConfig:
+    """Configuration settings for the BAFA spider."""
+    test_mode: bool = False
+    debug_mode: bool = False
+    items_per_page: int = 9999
+    page: int = 0
+    
+    def get_url(self) -> str:
+        """Generate the URL based on configuration."""
+        base_url = 'https://elan1.bafa.bund.de/bafa-portal/audit-suche/showErgebnis'
+        params = {
+            'resultsPerPage': 5 if self.test_mode else self.items_per_page,
+            'page': self.page
+        }
+        return f"{base_url}?{urlencode(params)}"
+
+class QuietLogger:
+    """Custom logger that only shows progress bar in non-debug mode."""
+    def __init__(self, debug_mode: bool):
+        self.debug_mode = debug_mode
+        self.logger = logging.getLogger('bafa_spider')
+        self.setup_logging()
+
+    def setup_logging(self) -> None:
+        """Configure logging based on debug mode."""
+        self.logger.setLevel(logging.DEBUG if self.debug_mode else logging.WARNING)
+        
+        # Clear any existing handlers
+        self.logger.handlers = []
+        
+        # Create formatters
+        debug_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        simple_formatter = logging.Formatter('%(message)s')
+
+        if self.debug_mode:
+            # Debug mode: log everything to file and console
+            file_handler = logging.FileHandler('bafa_spider_debug.log')
+            file_handler.setLevel(logging.DEBUG)
+            file_handler.setFormatter(debug_formatter)
+            self.logger.addHandler(file_handler)
+
+            console_handler = logging.StreamHandler()
+            console_handler.setLevel(logging.INFO)
+            console_handler.setFormatter(debug_formatter)
+            self.logger.addHandler(console_handler)
+        else:
+            # Non-debug mode: only show important messages
+            console_handler = logging.StreamHandler()
+            console_handler.setLevel(logging.WARNING)
+            console_handler.setFormatter(simple_formatter)
+            self.logger.addHandler(console_handler)
+
+    def debug(self, message: str) -> None:
+        """Log debug message."""
+        if self.debug_mode:
+            self.logger.debug(message)
+
+    def info(self, message: str) -> None:
+        """Log info message."""
+        if self.debug_mode:
+            self.logger.info(message)
+        
+    def warning(self, message: str) -> None:
+        """Log warning message."""
+        self.logger.warning(message)
+
+    def error(self, message: str) -> None:
+        """Log error message."""
+        self.logger.error(message)
+
 class ProgressStatsCollector:
-    def __init__(self):
-        self.total_items = 0
-        self.processed_items = 0
-        self.start_time = None
-        self.pbar = None
+    """Handles progress tracking and statistics collection during crawling."""
+    
+    def __init__(self, debug_mode: bool) -> None:
+        self.total_items: int = 0
+        self.processed_items: int = 0
+        self.start_time: Optional[datetime] = None
+        self.pbar: Optional[tqdm] = None
+        self.logger = QuietLogger(debug_mode)
 
-    def set_total(self, total):
-        self.total_items = total
-        self.start_time = datetime.now()
-        self.pbar = tqdm(total=total, desc="Processing advisors")
+    def set_total(self, total: int) -> None:
+        """Initialize progress bar with total items."""
+        try:
+            self.total_items = total
+            self.start_time = datetime.now()
+            self.pbar = tqdm(total=total, desc="Processing advisors", disable=False)
+            self.logger.info(f"Starting to process {total} items")
+        except Exception as e:
+            self.logger.error(f"Failed to set progress bar: {str(e)}")
 
-    def increment(self):
+    def increment(self) -> None:
+        """Increment progress counter."""
         if self.pbar:
-            self.processed_items += 1
-            self.pbar.update(1)
+            try:
+                self.processed_items += 1
+                self.pbar.update(1)
+            except Exception as e:
+                self.logger.error(f"Failed to update progress: {str(e)}")
 
-    def finish(self):
+    def finish(self) -> None:
+        """Complete progress tracking and display statistics."""
         if self.pbar:
-            self.pbar.close()
-            end_time = datetime.now()
-            duration = (end_time - self.start_time).total_seconds()
-            print(f"\nProcessing completed in {duration:.2f} seconds")
-            print(f"Total items processed: {self.processed_items}")
+            try:
+                self.pbar.close()
+                duration = (datetime.now() - self.start_time).total_seconds()
+                self.logger.info(f"Processing completed in {duration:.2f} seconds")
+                self.logger.info(f"Total items processed: {self.processed_items}")
+            except Exception as e:
+                self.logger.error(f"Failed to finish progress tracking: {str(e)}")
 
-class BAFASpider(scrapy.Spider):
+class BAFASpider(Spider):
+    """Spider for crawling BAFA advisor data."""
+    
     name = 'bafa_spider'
-    start_urls = ['https://elan1.bafa.bund.de/bafa-portal/audit-suche/showErgebnis?resultsPerPage=9999&page=0']
     
     custom_settings = {
-        'USER_AGENT': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'USER_AGENT': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'CONCURRENT_REQUESTS': 32,
         'CONCURRENT_REQUESTS_PER_DOMAIN': 32,
         'DOWNLOAD_DELAY': 0.25,
@@ -52,61 +141,110 @@ class BAFASpider(scrapy.Spider):
         'REACTOR_THREADPOOL_MAXSIZE': 20,
     }
 
-    def __init__(self, *args, **kwargs):
-        super(BAFASpider, self).__init__(*args, **kwargs)
-        self.stats_collector = ProgressStatsCollector()
-        self.items = []
+    def __init__(self, test_mode: bool = False, debug_mode: bool = False, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.config = SpiderConfig(test_mode=test_mode)
+        self.custom_logger = QuietLogger(debug_mode)  # Changed from self.logger to self.custom_logger
+        self.stats_collector = ProgressStatsCollector(debug_mode)
+        self.items: List[Dict[str, str]] = []
+        self.start_urls = [self.config.get_url()]
+        
+        mode_str = []
+        if test_mode:
+            mode_str.append("TEST")
+        if debug_mode:
+            mode_str.append("DEBUG")
+        if not mode_str:
+            mode_str.append("FULL")
+        
+        self.custom_logger.info(f"Running spider in {' + '.join(mode_str)} mode")
 
-    def clean_text(self, text):
-        if text is None:
+    @staticmethod
+    def clean_text(text: Optional[str]) -> str:
+        """Clean and normalize text content."""
+        if not text:
             return ''
         return ' '.join(text.replace('&nbsp;', ' ').strip().split())
 
-    def parse(self, response):
-        rows = response.xpath('//table[@class="ergebnisListe"]/tbody/tr[position()>1]')
-        total_rows = len(rows)
-        print(f"Found {total_rows} rows in the table")
-        self.stats_collector.set_total(total_rows)
+    def extract_row_data(self, row: scrapy.selector.Selector) -> Dict[str, str]:
+        """Extract data from a table row."""
+        columns = row.xpath('.//td')
+        if len(columns) >= 4:
+            return {
+                'Beratername': self.clean_text(columns[0].xpath('.//text()').get()),
+                'Beraterfirma': self.clean_text(columns[1].xpath('.//text()').get()),
+                'Beratersitz': self.clean_text(columns[2].xpath('.//text()').get()),
+                'Strasse': '',
+                'PLZ': '',
+                'Ort': '',
+                'Telefon': '',
+                'Fax': '',
+                'Email_Vorhanden': 'Nein',
+                'Email_Image_ID': '',
+                'Website': '',
+                'BFEE_ID': '',
+                'Detail_URL': ''
+            }
+        return {}
 
-        for row in rows:
-            columns = row.xpath('.//td')
+    def parse(self, response: scrapy.http.Response) -> Any:
+        """Parse the main page with advisor listings."""
+        try:
+            rows = response.xpath('//table[@class="ergebnisListe"]/tbody/tr[position()>1]')
+            total_rows = len(rows)
             
-            if len(columns) >= 4:
-                item = {
-                    'Beratername': self.clean_text(columns[0].xpath('.//text()').get()),
-                    'Beraterfirma': self.clean_text(columns[1].xpath('.//text()').get()),
-                    'Beratersitz': self.clean_text(columns[2].xpath('.//text()').get()),
-                    'Strasse': '',
-                    'PLZ': '',
-                    'Ort': '',
-                    'Telefon': '',
-                    'Fax': '',
-                    'Email_Vorhanden': 'Nein',
-                    'Email_Image_ID': '',
-                    'Website': '',
-                    'BFEE_ID': '',
-                    'Detail_URL': ''
-                }
-                
-                detail_url = columns[3].xpath('.//a/@href').get()
-                if detail_url:
-                    full_url = urljoin(response.url, detail_url)
-                    item['Detail_URL'] = full_url
-                    yield scrapy.Request(
-                        full_url,
-                        callback=self.parse_details,
-                        meta={'item': item}
-                    )
+            if self.config.test_mode:
+                rows = rows[:5]
+                total_rows = 5
+                self.logger.info("TEST MODE: Limited to 5 entries")
+            
+            self.logger.info(f"Found {total_rows} rows to process")
+            self.stats_collector.set_total(total_rows)
 
-    def parse_details(self, response):
-        item = response.meta['item']
-        
-        detail_texts = response.xpath('//div[@class="bereich"]//text()').getall()
-        detail_texts = [self.clean_text(text) for text in detail_texts if self.clean_text(text)]
-        
-        if detail_texts:
-            content = ' '.join(detail_texts)
+            for row in rows:
+                try:
+                    item = self.extract_row_data(row)
+                    if item:
+                        detail_url = row.xpath('.//td[4]//a/@href').get()
+                        if detail_url:
+                            full_url = urljoin(response.url, detail_url)
+                            item['Detail_URL'] = full_url
+                            yield scrapy.Request(
+                                full_url,
+                                callback=self.parse_details,
+                                meta={'item': item},
+                                errback=self.handle_error
+                            )
+                except Exception as e:
+                    self.logger.error(f"Error processing row: {str(e)}")
+
+        except Exception as e:
+            self.logger.error(f"Error parsing main page: {str(e)}")
+
+    def parse_details(self, response: scrapy.http.Response) -> Dict[str, str]:
+        """Parse detailed advisor information."""
+        try:
+            item = response.meta['item']
+            detail_texts = response.xpath('//div[@class="bereich"]//text()').getall()
+            detail_texts = [self.clean_text(text) for text in detail_texts if self.clean_text(text)]
             
+            if detail_texts:
+                content = ' '.join(detail_texts)
+                self.extract_contact_details(item, detail_texts, content, response)
+
+            self.items.append(item)
+            self.stats_collector.increment()
+            return item
+
+        except Exception as e:
+            self.logger.error(f"Error parsing details page: {str(e)}")
+            return response.meta['item']
+
+    def extract_contact_details(self, item: Dict[str, str], detail_texts: List[str], 
+                              content: str, response: scrapy.http.Response) -> None:
+        """Extract contact details from the response."""
+        try:
+            # Extract address
             for i, text in enumerate(detail_texts):
                 if re.match(r'^\d{5}', text):
                     item['PLZ'] = text[:5]
@@ -114,7 +252,8 @@ class BAFASpider(scrapy.Spider):
                     if i > 0:
                         item['Strasse'] = detail_texts[i-1]
                     break
-            
+
+            # Extract phone and fax
             phone_match = re.search(r'Tel\.: ([^F]+)', content)
             if phone_match:
                 item['Telefon'] = self.clean_text(phone_match.group(1))
@@ -122,7 +261,8 @@ class BAFASpider(scrapy.Spider):
             fax_match = re.search(r'Fax: ([^E]+)', content)
             if fax_match:
                 item['Fax'] = self.clean_text(fax_match.group(1))
-            
+
+            # Extract email information
             email_img = response.xpath('//div[@class="bereich"]//img[contains(@src, "m2i")]')
             if email_img:
                 item['Email_Vorhanden'] = 'Ja'
@@ -131,18 +271,23 @@ class BAFASpider(scrapy.Spider):
                     nr_match = re.search(r'nr=(\d+)', img_src)
                     if nr_match:
                         item['Email_Image_ID'] = nr_match.group(1)
-            
+
+            # Extract website
             website = response.xpath('//div[@class="bereich"]//a[contains(@href, "http")]/@href').get()
             if website and 'bafa.bund.de' not in website:
                 item['Website'] = website
-            
+
+            # Extract BFEE ID
             bfee_match = re.search(r'id=(\d+)', response.url)
             if bfee_match:
                 item['BFEE_ID'] = bfee_match.group(1)
 
-        self.items.append(item)
-        self.stats_collector.increment()
-        return item
+        except Exception as e:
+            self.logger.error(f"Error extracting contact details: {str(e)}")
+
+    def handle_error(self, failure: Any) -> None:
+        """Handle request failures."""
+        self.logger.error(f"Request failed: {failure.value}")
 
     @classmethod
     def from_crawler(cls, crawler, *args, **kwargs):
@@ -150,10 +295,18 @@ class BAFASpider(scrapy.Spider):
         crawler.signals.connect(spider.spider_closed, signal=signals.spider_closed)
         return spider
 
-    def spider_closed(self, spider):
+    def spider_closed(self, spider: Spider) -> None:
+        """Handle spider closure and save results."""
         self.stats_collector.finish()
-        
-        if self.items:
+        self.save_results()
+
+    def save_results(self) -> None:
+        """Save collected data to Excel file."""
+        if not self.items:
+            self.logger.warning("No data was collected!")
+            return
+
+        try:
             df = pd.DataFrame(self.items)
             df = df.replace({None: '', 'None': '', 'nan': ''})
             df = df.apply(lambda x: x.str.strip() if x.dtype == "object" else x)
@@ -165,27 +318,56 @@ class BAFASpider(scrapy.Spider):
             ]
             df = df[columns_order]
             
-            df.to_excel('bafa_results.xlsx', index=False)
-            print(f"\nData saved to 'bafa_results.xlsx'")
-            print(f"Total records saved: {len(df)}")
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            mode = "test" if self.config.test_mode else "full"
+            output_file = Path(f'bafa_results_{mode}_{timestamp}.xlsx')
             
-            print("\nStatistics:")
-            print(f"Entries with email: {len(df[df['Email_Vorhanden'] == 'Ja'])}")
-            print(f"Entries with website: {len(df[df['Website'].str.len() > 0])}")
-            print(f"Unique cities: {df['Ort'].nunique()}")
-        else:
-            print("\nNo data was collected!")
+            df.to_excel(output_file, index=False)
+            self.log_statistics(df)
+            
+        except Exception as e:
+            self.logger.error(f"Error saving results: {str(e)}")
 
-def run_spider():
-    print("Starting BAFA advisor data collection...")
+    def log_statistics(self, df: pd.DataFrame) -> None:
+        """Log data collection statistics."""
+        self.logger.info(f"\nData saved to 'bafa_results.xlsx'")
+        self.logger.info(f"Total records saved: {len(df)}")
+        self.logger.info(f"Entries with email: {len(df[df['Email_Vorhanden'] == 'Ja'])}")
+        self.logger.info(f"Entries with website: {len(df[df['Website'].str.len() > 0])}")
+        self.logger.info(f"Unique cities: {df['Ort'].nunique()}")
+
+def run_spider(test_mode: bool = False, debug_mode: bool = False) -> None:
+    """
+    Run the BAFA spider.
     
-    process = CrawlerProcess({
-        'TELNETCONSOLE_ENABLED': False,
-        'LOG_LEVEL': 'INFO'
-    })
-    
-    process.crawl(BAFASpider)
-    process.start()
+    Args:
+        test_mode (bool): If True, only scrape 5 entries for testing
+        debug_mode (bool): If True, show detailed logging information
+    """
+    try:
+        logger = QuietLogger(debug_mode)
+        logger.info(f"Starting BAFA advisor data collection...")
+        
+        process = CrawlerProcess({
+            'TELNETCONSOLE_ENABLED': False,
+            'LOG_LEVEL': 'DEBUG' if debug_mode else 'ERROR'
+        })
+        
+        process.crawl(BAFASpider, test_mode=test_mode, debug_mode=debug_mode)
+        process.start()
+    except Exception as e:
+        logger.error(f"Failed to run spider: {str(e)}")
 
 if __name__ == "__main__":
-    run_spider()
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='BAFA Advisor Data Scraper')
+    parser.add_argument('--test', 
+                       action='store_true',
+                       help='Run in test mode (only scrape 5 entries)')
+    parser.add_argument('--debug',
+                       action='store_true',
+                       help='Run in debug mode (show detailed logs)')
+    
+    args = parser.parse_args()
+    run_spider(test_mode=args.test, debug_mode=args.debug)
