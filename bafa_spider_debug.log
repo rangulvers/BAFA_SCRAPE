@@ -13,3 +13,16 @@ Data saved to 'bafa_results.xlsx'
 2025-01-24 10:34:21,773 - INFO - Entries with email: 5
 2025-01-24 10:34:21,773 - INFO - Entries with website: 2
 2025-01-24 10:34:21,774 - INFO - Unique cities: 5
+2025-01-24 11:18:44,546 - INFO - Starting BAFA advisor data collection...
+2025-01-24 11:18:44,619 - INFO - Running spider in TEST + DEBUG mode
+2025-01-24 11:18:46,069 - INFO - TEST MODE: Limited to 5 entries
+2025-01-24 11:18:46,069 - INFO - Found 5 rows to process
+2025-01-24 11:18:46,135 - INFO - Starting to process 5 items
+2025-01-24 11:18:47,490 - INFO - Processing completed in 1.42 seconds
+2025-01-24 11:18:47,490 - INFO - Total items processed: 5
+2025-01-24 11:18:48,417 - INFO - 
+Data saved to 'bafa_results.xlsx'
+2025-01-24 11:18:48,417 - INFO - Total records saved: 5
+2025-01-24 11:18:48,417 - INFO - Entries with email: 5
+2025-01-24 11:18:48,418 - INFO - Entries with website: 3
+2025-01-24 11:18:48,418 - INFO - Unique cities: 5

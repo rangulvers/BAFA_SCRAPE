@@ -7,10 +7,23 @@ from urllib.parse import urljoin, urlparse, parse_qs, urlencode
 import re
 from tqdm import tqdm
 from datetime import datetime
-import logging
 from typing import Optional, Dict, List, Any
 from pathlib import Path
 from dataclasses import dataclass
+from loguru import logger
+import sys
+
+# Configure loguru logger
+logger.remove()  # Remove default handler
+logger.add(sys.stderr, level="INFO")  # Add stderr handler for normal output
+logger.add(
+    "bafa_spider_{time}.log",
+    rotation="500 MB",
+    retention="10 days",
+    level="DEBUG",
+    format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}",
+    filter=lambda record: record["level"].name == "DEBUG"
+)
 
 @dataclass
 class SpiderConfig:
@@ -29,60 +42,6 @@ class SpiderConfig:
         }
         return f"{base_url}?{urlencode(params)}"
 
-class QuietLogger:
-    """Custom logger that only shows progress bar in non-debug mode."""
-    def __init__(self, debug_mode: bool):
-        self.debug_mode = debug_mode
-        self.logger = logging.getLogger('bafa_spider')
-        self.setup_logging()
-
-    def setup_logging(self) -> None:
-        """Configure logging based on debug mode."""
-        self.logger.setLevel(logging.DEBUG if self.debug_mode else logging.WARNING)
-        
-        # Clear any existing handlers
-        self.logger.handlers = []
-        
-        # Create formatters
-        debug_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-        simple_formatter = logging.Formatter('%(message)s')
-
-        if self.debug_mode:
-            # Debug mode: log everything to file and console
-            file_handler = logging.FileHandler('bafa_spider_debug.log')
-            file_handler.setLevel(logging.DEBUG)
-            file_handler.setFormatter(debug_formatter)
-            self.logger.addHandler(file_handler)
-
-            console_handler = logging.StreamHandler()
-            console_handler.setLevel(logging.INFO)
-            console_handler.setFormatter(debug_formatter)
-            self.logger.addHandler(console_handler)
-        else:
-            # Non-debug mode: only show important messages
-            console_handler = logging.StreamHandler()
-            console_handler.setLevel(logging.WARNING)
-            console_handler.setFormatter(simple_formatter)
-            self.logger.addHandler(console_handler)
-
-    def debug(self, message: str) -> None:
-        """Log debug message."""
-        if self.debug_mode:
-            self.logger.debug(message)
-
-    def info(self, message: str) -> None:
-        """Log info message."""
-        if self.debug_mode:
-            self.logger.info(message)
-        
-    def warning(self, message: str) -> None:
-        """Log warning message."""
-        self.logger.warning(message)
-
-    def error(self, message: str) -> None:
-        """Log error message."""
-        self.logger.error(message)
-
 class ProgressStatsCollector:
     """Handles progress tracking and statistics collection during crawling."""
     
@@ -91,7 +50,7 @@ class ProgressStatsCollector:
         self.processed_items: int = 0
         self.start_time: Optional[datetime] = None
         self.pbar: Optional[tqdm] = None
-        self.logger = QuietLogger(debug_mode)
+        self.debug_mode = debug_mode
 
     def set_total(self, total: int) -> None:
         """Initialize progress bar with total items."""
@@ -99,9 +58,9 @@ class ProgressStatsCollector:
             self.total_items = total
             self.start_time = datetime.now()
             self.pbar = tqdm(total=total, desc="Processing advisors", disable=False)
-            self.logger.info(f"Starting to process {total} items")
+            logger.debug(f"Starting to process {total} items")
         except Exception as e:
-            self.logger.error(f"Failed to set progress bar: {str(e)}")
+            logger.error(f"Failed to set progress bar: {str(e)}")
 
     def increment(self) -> None:
         """Increment progress counter."""
@@ -110,7 +69,7 @@ class ProgressStatsCollector:
                 self.processed_items += 1
                 self.pbar.update(1)
             except Exception as e:
-                self.logger.error(f"Failed to update progress: {str(e)}")
+                logger.error(f"Failed to update progress: {str(e)}")
 
     def finish(self) -> None:
         """Complete progress tracking and display statistics."""
@@ -118,10 +77,10 @@ class ProgressStatsCollector:
             try:
                 self.pbar.close()
                 duration = (datetime.now() - self.start_time).total_seconds()
-                self.logger.info(f"Processing completed in {duration:.2f} seconds")
-                self.logger.info(f"Total items processed: {self.processed_items}")
+                logger.debug(f"Processing completed in {duration:.2f} seconds")
+                logger.debug(f"Total items processed: {self.processed_items}")
             except Exception as e:
-                self.logger.error(f"Failed to finish progress tracking: {str(e)}")
+                logger.error(f"Failed to finish progress tracking: {str(e)}")
 
 class BAFASpider(Spider):
     """Spider for crawling BAFA advisor data."""
@@ -144,10 +103,14 @@ class BAFASpider(Spider):
     def __init__(self, test_mode: bool = False, debug_mode: bool = False, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.config = SpiderConfig(test_mode=test_mode)
-        self.custom_logger = QuietLogger(debug_mode)  # Changed from self.logger to self.custom_logger
         self.stats_collector = ProgressStatsCollector(debug_mode)
         self.items: List[Dict[str, str]] = []
         self.start_urls = [self.config.get_url()]
+        
+        # Update logger level based on debug mode
+        if debug_mode:
+            logger.remove()
+            logger.add(sys.stderr, level="DEBUG")
         
         mode_str = []
         if test_mode:
@@ -157,7 +120,7 @@ class BAFASpider(Spider):
         if not mode_str:
             mode_str.append("FULL")
         
-        self.custom_logger.info(f"Running spider in {' + '.join(mode_str)} mode")
+        logger.info(f"Running spider in {' + '.join(mode_str)} mode")
 
     @staticmethod
     def clean_text(text: Optional[str]) -> str:
@@ -168,24 +131,28 @@ class BAFASpider(Spider):
 
     def extract_row_data(self, row: scrapy.selector.Selector) -> Dict[str, str]:
         """Extract data from a table row."""
-        columns = row.xpath('.//td')
-        if len(columns) >= 4:
-            return {
-                'Beratername': self.clean_text(columns[0].xpath('.//text()').get()),
-                'Beraterfirma': self.clean_text(columns[1].xpath('.//text()').get()),
-                'Beratersitz': self.clean_text(columns[2].xpath('.//text()').get()),
-                'Strasse': '',
-                'PLZ': '',
-                'Ort': '',
-                'Telefon': '',
-                'Fax': '',
-                'Email_Vorhanden': 'Nein',
-                'Email_Image_ID': '',
-                'Website': '',
-                'BFEE_ID': '',
-                'Detail_URL': ''
-            }
-        return {}
+        try:
+            columns = row.xpath('.//td')
+            if len(columns) >= 4:
+                return {
+                    'Beratername': self.clean_text(columns[0].xpath('.//text()').get()),
+                    'Beraterfirma': self.clean_text(columns[1].xpath('.//text()').get()),
+                    'Beratersitz': self.clean_text(columns[2].xpath('.//text()').get()),
+                    'Strasse': '',
+                    'PLZ': '',
+                    'Ort': '',
+                    'Telefon': '',
+                    'Fax': '',
+                    'Email_Vorhanden': 'Nein',
+                    'Email_Image_ID': '',
+                    'Website': '',
+                    'BFEE_ID': '',
+                    'Detail_URL': ''
+                }
+            return {}
+        except Exception as e:
+            logger.error(f"Error extracting row data: {str(e)}")
+            return {}
 
     def parse(self, response: scrapy.http.Response) -> Any:
         """Parse the main page with advisor listings."""
@@ -196,9 +163,9 @@ class BAFASpider(Spider):
             if self.config.test_mode:
                 rows = rows[:5]
                 total_rows = 5
-                self.logger.info("TEST MODE: Limited to 5 entries")
+                logger.debug("TEST MODE: Limited to 5 entries")
             
-            self.logger.info(f"Found {total_rows} rows to process")
+            logger.debug(f"Found {total_rows} rows to process")
             self.stats_collector.set_total(total_rows)
 
             for row in rows:
@@ -216,10 +183,10 @@ class BAFASpider(Spider):
                                 errback=self.handle_error
                             )
                 except Exception as e:
-                    self.logger.error(f"Error processing row: {str(e)}")
+                    logger.error(f"Error processing row: {str(e)}")
 
         except Exception as e:
-            self.logger.error(f"Error parsing main page: {str(e)}")
+            logger.error(f"Error parsing main page: {str(e)}")
 
     def parse_details(self, response: scrapy.http.Response) -> Dict[str, str]:
         """Parse detailed advisor information."""
@@ -231,13 +198,14 @@ class BAFASpider(Spider):
             if detail_texts:
                 content = ' '.join(detail_texts)
                 self.extract_contact_details(item, detail_texts, content, response)
+                logger.debug(f"Processed details for advisor: {item['Beratername']}")
 
             self.items.append(item)
             self.stats_collector.increment()
             return item
 
         except Exception as e:
-            self.logger.error(f"Error parsing details page: {str(e)}")
+            logger.error(f"Error parsing details page: {str(e)}")
             return response.meta['item']
 
     def extract_contact_details(self, item: Dict[str, str], detail_texts: List[str], 
@@ -282,12 +250,14 @@ class BAFASpider(Spider):
             if bfee_match:
                 item['BFEE_ID'] = bfee_match.group(1)
 
+            logger.debug(f"Extracted contact details for: {item['Beratername']}")
+
         except Exception as e:
-            self.logger.error(f"Error extracting contact details: {str(e)}")
+            logger.error(f"Error extracting contact details: {str(e)}")
 
     def handle_error(self, failure: Any) -> None:
         """Handle request failures."""
-        self.logger.error(f"Request failed: {failure.value}")
+        logger.error(f"Request failed: {failure.value}")
 
     @classmethod
     def from_crawler(cls, crawler, *args, **kwargs):
@@ -303,7 +273,7 @@ class BAFASpider(Spider):
     def save_results(self) -> None:
         """Save collected data to Excel file."""
         if not self.items:
-            self.logger.warning("No data was collected!")
+            logger.warning("No data was collected!")
             return
 
         try:
@@ -323,29 +293,23 @@ class BAFASpider(Spider):
             output_file = Path(f'bafa_results_{mode}_{timestamp}.xlsx')
             
             df.to_excel(output_file, index=False)
+            logger.info(f"Results saved to: {output_file}")
             self.log_statistics(df)
             
         except Exception as e:
-            self.logger.error(f"Error saving results: {str(e)}")
+            logger.error(f"Error saving results: {str(e)}")
 
     def log_statistics(self, df: pd.DataFrame) -> None:
         """Log data collection statistics."""
-        self.logger.info(f"\nData saved to 'bafa_results.xlsx'")
-        self.logger.info(f"Total records saved: {len(df)}")
-        self.logger.info(f"Entries with email: {len(df[df['Email_Vorhanden'] == 'Ja'])}")
-        self.logger.info(f"Entries with website: {len(df[df['Website'].str.len() > 0])}")
-        self.logger.info(f"Unique cities: {df['Ort'].nunique()}")
+        logger.info("Collection Statistics:")
+        logger.info(f"Total records saved: {len(df)}")
+        logger.info(f"Entries with email: {len(df[df['Email_Vorhanden'] == 'Ja'])}")
+        logger.info(f"Entries with website: {len(df[df['Website'].str.len() > 0])}")
+        logger.info(f"Unique cities: {df['Ort'].nunique()}")
 
 def run_spider(test_mode: bool = False, debug_mode: bool = False) -> None:
-    """
-    Run the BAFA spider.
-    
-    Args:
-        test_mode (bool): If True, only scrape 5 entries for testing
-        debug_mode (bool): If True, show detailed logging information
-    """
+    """Run the BAFA spider."""
     try:
-        logger = QuietLogger(debug_mode)
         logger.info(f"Starting BAFA advisor data collection...")
         
         process = CrawlerProcess({
