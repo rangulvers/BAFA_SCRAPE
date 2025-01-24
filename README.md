@@ -1,6 +1,3 @@
-Here's a comprehensive README.md for your BAFA scraper project:
-
-```markdown
 # BAFA Advisor Data Scraper
 
 A Python-based web scraper using Scrapy to collect advisor data from the BAFA (Bundesamt für Wirtschaft und Ausfuhrkontrolle) website.
@@ -144,42 +141,3 @@ The scraper is configured for optimal performance with:
 - Download delay: 0.25 seconds
 - Connection timeout: 15 seconds
 - Retry enabled for failed requests
-
-## Contributing
-
-1. Fork the repository
-2. Create your feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a new Pull Request
-
-## License
-
-[Your chosen license]
-
-## Disclaimer
-
-This tool is for educational purposes only. Make sure to comply with BAFA's terms of service and robots.txt when using this scraper.
-```
-
-This README provides comprehensive information about:
-- How to install and use the scraper
-- Available features and configurations
-- Output format and data structure
-- Error handling and logging capabilities
-- Performance settings
-- Contributing guidelines
-
-You might want to customize:
-- The repository URL
-- License information
-- Any specific installation requirements for your environment
-- Additional configuration options you might add in the future
-
-The README follows best practices by including:
-- Clear installation instructions
-- Usage examples
-- Output descriptions
-- Configuration options
-- Error handling information
-- Contributing guidelines
