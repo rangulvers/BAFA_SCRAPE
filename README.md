@@ -1,42 +1,33 @@
+
 # BAFA Advisor Data Scraper
 
-A Python-based web scraper using Scrapy to collect advisor data from the BAFA (Bundesamt für Wirtschaft und Ausfuhrkontrolle) website.
+A robust Python web scraper designed to collect advisor data from the BAFA (Bundesamt für Wirtschaft und Ausfuhrkontrolle) portal. Built with modern Python practices using Scrapy, Pydantic, and Loguru.
 
 ## Features
 
-- Scrapes advisor information including:
-  - Name
-  - Company
-  - Address details
-  - Contact information
-  - Email presence
-  - Website
-  - BFEE ID
-- Progress bar tracking
-- Configurable test mode for development
-- Debug logging capabilities
-- Excel output with timestamp
-- Error handling and retry mechanisms
-
-## Requirements
-
-```bash
-python >= 3.11
-scrapy >= 2.12.0
-pandas
-tqdm
-openpyxl
-```
+- 🔄 Automated data extraction from BAFA portal
+- ✅ Data validation using Pydantic V2
+- 📊 Real-time progress tracking
+- 📝 Comprehensive logging with Loguru
+- 🔁 Retry mechanism with exponential backoff
+- 🧪 Test mode for development
+- 🐛 Debug mode with detailed logging
 
 ## Installation
 
+### Prerequisites
+- Python 3.11 or higher
+- pip or uv package manager
+
+### Setup
+
 1. Clone the repository:
 ```bash
-git clone [your-repo-url]
-cd BAFA_SCRAPE
+git clone [repository-url]
+cd bafa-scraper
 ```
 
-2. Create and activate a virtual environment:
+2. Create a virtual environment:
 ```bash
 python -m venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
@@ -44,100 +35,142 @@ source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
 3. Install dependencies:
 ```bash
-# Using pip
-pip install scrapy pandas tqdm openpyxl
-
-# Or using uv (recommended)
-uv pip install scrapy pandas tqdm openpyxl
+pip install scrapy pandas tqdm openpyxl loguru pydantic tenacity
 ```
 
 ## Usage
 
-The scraper can be run in different modes:
-
-### Full Mode
-Scrapes all available advisor entries:
+### Basic Usage
 ```bash
 python bafa.py
 ```
 
-### Test Mode
-Scrapes only 5 entries (useful for testing):
-```bash
-python bafa.py --test
-```
+### Available Options
+- Test Mode (limited to 5 entries):
+  ```bash
+  python bafa.py --test
+  ```
 
-### Debug Mode
-Enables detailed logging:
-```bash
-python bafa.py --debug
-```
+- Debug Mode (detailed logging):
+  ```bash
+  python bafa.py --debug
+  ```
 
-### Test + Debug Mode
-Combines test and debug modes:
-```bash
-python bafa.py --test --debug
+- Combined Mode:
+  ```bash
+  python bafa.py --test --debug
+  ```
+
+## Data Structure
+
+### Collected Information
+```python
+{
+    'Beratername': str,      # Advisor name
+    'Beraterfirma': str,     # Company name
+    'Strasse': str,          # Street address
+    'PLZ': str,              # Postal code (validated)
+    'Ort': str,             # City
+    'Telefon': str,         # Phone number
+    'Fax': str,             # Fax number
+    'Email_Vorhanden': str, # Email presence (Ja/Nein)
+    'Email_Image_ID': str,  # Email image reference
+    'Website': str,         # Company website
+    'BFEE_ID': str,        # BFEE identifier
+    'Detail_URL': str       # Source URL
+}
 ```
 
 ## Output Files
 
-- Data file: `bafa_results_[mode]_[timestamp].xlsx`
-  - Contains all scraped advisor information
-  - Mode indicates whether it was a test or full run
-  - Timestamp format: YYYYMMDD_HHMMSS
+### Directory Structure
+```
+project/
+├── logs/
+│   ├── bafa_spider_[timestamp].log
+│   └── errors_[timestamp].log
+└── output/
+    └── bafa_results_[mode]_[timestamp].xlsx
+```
 
-- Debug log (when in debug mode): `bafa_spider_debug.log`
-  - Contains detailed execution information
-  - Includes errors and warnings
-  - Useful for troubleshooting
+### Log Files
+- Main log: `logs/bafa_spider_[timestamp].log`
+  - Rotation: 500 MB
+  - Retention: 10 days
+  - Format: `{time} | {level} | {module}:{function}:{line} | {message}`
 
-## Data Structure
+- Error log: `logs/errors_[timestamp].log`
+  - Contains detailed error information
+  - Created only when errors occur
 
-The scraped data includes the following fields:
-- `Beratername`: Advisor name
-- `Beraterfirma`: Company name
-- `Strasse`: Street address
-- `PLZ`: Postal code
-- `Ort`: City
-- `Telefon`: Phone number
-- `Fax`: Fax number
-- `Email_Vorhanden`: Email presence indicator (Ja/Nein)
-- `Email_Image_ID`: Email image reference ID
-- `Website`: Company website
-- `BFEE_ID`: BFEE identifier
-- `Detail_URL`: Source URL for detailed information
+### Data Output
+- Format: Excel (.xlsx)
+- Location: `output/bafa_results_[mode]_[timestamp].xlsx`
+- Sheet name: 'BAFA_Advisors'
 
 ## Configuration
 
-The spider's behavior can be customized through the `SpiderConfig` class:
-- `test_mode`: Limits scraping to 5 entries
-- `debug_mode`: Enables detailed logging
-- `items_per_page`: Number of items per request
-- `page`: Starting page number
+### Spider Settings
+```python
+{
+    'CONCURRENT_REQUESTS': 32,
+    'DOWNLOAD_DELAY': 0.25,
+    'RETRY_TIMES': 3,
+    'DOWNLOAD_TIMEOUT': 15
+}
+```
+
+### Retry Mechanism
+- Maximum attempts: 3
+- Exponential backoff: 4-10 seconds
+- Automatic retry on failure
 
 ## Error Handling
 
-The scraper includes comprehensive error handling:
-- Request retries (up to 3 times)
-- Connection timeout handling
-- Data extraction error recovery
-- Progress tracking protection
-- File operation error handling
+The scraper implements comprehensive error handling:
+- Network request retries
+- Data validation
+- File operations
+- Progress tracking
+- Detailed error logging
 
-## Logging
+## Statistics
 
-Logging levels are configured based on the mode:
-- Normal mode: Only shows progress bar and critical errors
-- Debug mode: Shows detailed information including:
-  - Request details
-  - Processing steps
-  - Errors and warnings
-  - Statistics
+After each run, the scraper provides detailed statistics:
+- Total records collected
+- Entries with email
+- Entries with website
+- Unique cities
+- Failed items
+- Success rate
 
-## Performance
+## Development
 
-The scraper is configured for optimal performance with:
-- Concurrent requests: 32
-- Download delay: 0.25 seconds
-- Connection timeout: 15 seconds
-- Retry enabled for failed requests
+### Running Tests
+Use test mode for development:
+```bash
+python bafa.py --test --debug
+```
+
+### Code Structure
+- `SpiderConfig`: Configuration management
+- `AdvisorData`: Data validation model
+- `ProgressStatsCollector`: Progress tracking
+- `BAFASpider`: Main scraping logic
+
+
+
+## Disclaimer
+
+This tool is for educational purposes. Ensure compliance with BAFA's terms of service when using this scraper.
+```
+
+This README provides:
+- Clear installation and usage instructions
+- Detailed feature documentation
+- Complete configuration options
+- Directory structure explanation
+- Error handling information
+- Statistics overview
+- Development guidelines
+
